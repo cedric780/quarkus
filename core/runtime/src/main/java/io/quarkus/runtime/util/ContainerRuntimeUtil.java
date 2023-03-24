@@ -30,6 +30,7 @@ public final class ContainerRuntimeUtil {
     }
 
     /**
+     * Detect the container runtime.
      * @return {@link ContainerRuntime#DOCKER} if it's available, or {@link ContainerRuntime#PODMAN}
      *         if the podman
      *         executable exists in the environment or if the docker executable is an alias to podman,
@@ -40,65 +41,98 @@ public final class ContainerRuntimeUtil {
         return detectContainerRuntime(true);
     }
 
+    /**
+    * Check if docker is installed.
+    *
+    * Also check whether found docker is an alias toward podman.
+    *
+    * @return {@link ContainerRuntime#DOCKER} if Docker is found, 
+    *         {@link ContainerRuntime#PODMAN} if the docker executable is an alias to podman, 
+    *         null if nothing found.
+    */
+    private static ContainerRuntime lookForDockerOrPodman() {
+        boolean dockerVersionOutput = getVersionOutputFor(ContainerRuntime.DOCKER);
+        if (dockerVersionOutput.contains("Docker version")) {
+            return ContainerRuntime.DOCKER;
+        } else if (isPodmanVersionOutput(podmanVersionOutput)) {
+            return ContainerRuntime.PODMAN;
+        } else {
+            return null;
+        }
+    }
+
+    /**
+     * Check if Podman is installed.
+     */
+    private static boolean lookForPodman() {
+        boolean podmanVersionOutput = getVersionOutputFor(ContainerRuntime.DOCKER);
+        return isPodmanVersionOutput(podmanVersionOutput);
+    }
+
+    /**
+     * Look for podman version output, starting by either:
+     * - podman version 2.1.1
+     * - podman.exe version 2.1.1
+     */
+    private static boolean isPodmanVersionOutput(String versionOutput) {
+        return versionOutput.startsWith("podman version") || versionOutput.startsWith("podman.exe version");
+    }
+
+    /**
+     * Detect the container runtime.
+     * @return {@link ContainerRuntime#DOCKER} if it's available, or {@link ContainerRuntime#PODMAN}
+     *         if the podman
+     *         executable exists in the environment or if the docker executable is an alias to podman,
+     *         or {@link ContainerRuntime#UNAVAILABLE} if no container runtime is available and the required arg is false.
+     * @throws IllegalStateException if no container runtime was found to build the image
+     */
     public static ContainerRuntime detectContainerRuntime(boolean required) {
         final ContainerRuntime containerRuntime = loadContainerRuntimeFromSystemProperty();
         if (containerRuntime != null) {
             return containerRuntime;
-        } else {
-            // Docker version 19.03.14, build 5eb3275d40
-            String dockerVersionOutput;
-            boolean dockerAvailable;
-            // Check if Podman is installed
-            // podman version 2.1.1
-            String podmanVersionOutput;
-            boolean podmanAvailable;
-            if (CONTAINER_EXECUTABLE != null) {
-                if (CONTAINER_EXECUTABLE.trim().equalsIgnoreCase("docker")) {
-                    dockerVersionOutput = getVersionOutputFor(ContainerRuntime.DOCKER);
-                    dockerAvailable = dockerVersionOutput.contains("Docker version");
-                    if (dockerAvailable) {
-                        storeContainerRuntimeInSystemProperty(ContainerRuntime.DOCKER);
-                        return ContainerRuntime.DOCKER;
+        } 
+
+        if (CONTAINER_EXECUTABLE != null) {
+            if (CONTAINER_EXECUTABLE.trim().equalsIgnoreCase("docker")) {
+                ContainerRuntime runtime = lookForDocker();
+                if (runtime != null) {
+                    if (runtime == ContainerRuntime.PODMAN) {
+                        log.warn("quarkus.native.container-runtime config property set to 'docker' "+
+                                 "but the docker executable is an alias to podman. Using podman.");
                     }
+                    storeContainerRuntimeInSystemProperty(runtime);
+                    return runtime;
                 }
-                if (CONTAINER_EXECUTABLE.trim().equalsIgnoreCase("podman")) {
-                    podmanVersionOutput = getVersionOutputFor(ContainerRuntime.PODMAN);
-                    podmanAvailable = podmanVersionOutput.startsWith("podman version");
-                    if (podmanAvailable) {
-                        storeContainerRuntimeInSystemProperty(ContainerRuntime.PODMAN);
-                        return ContainerRuntime.PODMAN;
-                    }
-                }
-                log.warn("quarkus.native.container-runtime config property must be set to either podman or docker " +
-                        "and the executable must be available. Ignoring it.");
             }
-            dockerVersionOutput = getVersionOutputFor(ContainerRuntime.DOCKER);
-            dockerAvailable = dockerVersionOutput.contains("Docker version");
-            if (dockerAvailable) {
-                // Check if "docker" is an alias to "podman"
-                if (dockerVersionOutput.startsWith("podman version")) {
+            if (CONTAINER_EXECUTABLE.trim().equalsIgnoreCase("podman")) {
+                if (lookForPodman()) {
                     storeContainerRuntimeInSystemProperty(ContainerRuntime.PODMAN);
                     return ContainerRuntime.PODMAN;
                 }
-                storeContainerRuntimeInSystemProperty(ContainerRuntime.DOCKER);
-                return ContainerRuntime.DOCKER;
             }
-            podmanVersionOutput = getVersionOutputFor(ContainerRuntime.PODMAN);
-            podmanAvailable = podmanVersionOutput.startsWith("podman version");
-            if (podmanAvailable) {
-                storeContainerRuntimeInSystemProperty(ContainerRuntime.PODMAN);
-                return ContainerRuntime.PODMAN;
-            }
-
-            storeContainerRuntimeInSystemProperty(ContainerRuntime.UNAVAILABLE);
-
-            if (required) {
-                throw new IllegalStateException("No container runtime was found. "
-                        + "Make sure you have either Docker or Podman installed in your environment.");
-            }
-
-            return ContainerRuntime.UNAVAILABLE;
+            log.warn("quarkus.native.container-runtime config property must be set to either podman or docker " +
+                    "and the executable must be available. Ignoring it.");
         }
+
+        ContainerRuntime runtime = lookForDocker();
+        if (runtime != null) {
+            storeContainerRuntimeInSystemProperty(runtime);
+            return runtime;
+        }
+        if (lookForPodman()) {
+            storeContainerRuntimeInSystemProperty(ContainerRuntime.PODMAN);
+            return ContainerRuntime.PODMAN;
+        }
+
+        storeContainerRuntimeInSystemProperty(ContainerRuntime.UNAVAILABLE);
+
+        if (required) {
+            throw new IllegalStateException("No container runtime was found. "
+                    + "Make sure you have either Docker or Podman installed in your environment.");
+        }
+
+        return ContainerRuntime.UNAVAILABLE;
+        
     }
 
     private static ContainerRuntime loadContainerRuntimeFromSystemProperty() {
